@@ -27,6 +27,7 @@ import { authWithCustomTab, authWithSafari } from './utils/nativeAuth';
 import WindowButtons from '@/components/WindowButtons';
 import type { OAuthProvider } from './components/ProviderLogin';
 import AuthPanel from './components/AuthPanel';
+import ServerSettingsPanel from '@/components/settings/ServerSettingsPanel';
 
 interface SingleInstancePayload {
   args: string[];
@@ -34,7 +35,10 @@ interface SingleInstancePayload {
 }
 
 const WEB_AUTH_CALLBACK = `${getBaseUrl()}/auth/callback`;
-const DEEPLINK_CALLBACK = 'readest://auth-callback';
+const DEEPLINK_CALLBACK =
+  process.env['NEXT_PUBLIC_SELFHOST_BUILD'] === 'true'
+    ? 'readest-selfhost://auth-callback'
+    : 'readest://auth-callback';
 const USE_APPLE_SIGN_IN = process.env['NEXT_PUBLIC_USE_APPLE_SIGN_IN'] === 'true';
 
 export default function AuthPage() {
@@ -47,6 +51,7 @@ export default function AuthPage() {
   const { settings, setSettings, saveSettings } = useSettingsStore();
   const [port, setPort] = useState<number | null>(null);
   const [isMounted, setIsMounted] = useState(false);
+  const [serverSettingsOpen, setServerSettingsOpen] = useState(false);
   const isOAuthServerRunning = useRef(false);
   const useCustomeOAuth = useRef(false);
 
@@ -66,7 +71,9 @@ export default function AuthPage() {
       (process.env.NODE_ENV === 'production' || appService?.isMobileApp || USE_APPLE_SIGN_IN)
     ) {
       if (appService?.isMobileApp) {
-        return isOAuth ? DEEPLINK_CALLBACK : WEB_AUTH_CALLBACK;
+        return isOAuth || process.env['NEXT_PUBLIC_SELFHOST_BUILD'] === 'true'
+          ? DEEPLINK_CALLBACK
+          : WEB_AUTH_CALLBACK;
       }
       return DEEPLINK_CALLBACK;
     }
@@ -367,6 +374,15 @@ export default function AuthPage() {
             appService?.hasTrafficLight ? 'mt-24' : 'mt-16',
           )}
         >
+          <button
+            type='button'
+            className='btn btn-ghost btn-sm eink-bordered mb-4'
+            aria-expanded={serverSettingsOpen}
+            onClick={() => setServerSettingsOpen((open) => !open)}
+          >
+            {_('Self-hosted server')}
+          </button>
+          {serverSettingsOpen && <ServerSettingsPanel compact />}
           <AuthPanel
             supabaseClient={supabase}
             magicLink={true}

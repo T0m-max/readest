@@ -1,0 +1,185 @@
+name: Build self-hosted clients
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/self-hosted-server]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selfhost-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXT_PUBLIC_APP_PLATFORM: tauri
+  NEXT_PUBLIC_SELFHOST_BUILD: 'true'
+  NEXT_PUBLIC_DISABLE_UPDATER: 'true'
+  NEXT_TELEMETRY_DISABLED: '1'
+  NODE_OPTIONS: --max-old-space-size=8192
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize frontend submodules
+        run: git submodule update --init packages/foliate-js packages/simplecc-wasm packages/js-mdict packages/qcms apps/readest-app/src-tauri/plugins/tauri-plugin-turso
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @readest/readest-app setup-vendors
+      - name: Unit tests
+        env:
+          NEXT_PUBLIC_APP_PLATFORM: web
+          NEXT_PUBLIC_SELFHOST_BUILD: 'false'
+          NEXT_PUBLIC_DISABLE_UPDATER: ''
+        run: pnpm --filter @readest/readest-app test --run --maxWorkers=4 src/__tests__/services/customServerConfig.test.ts src/__tests__/services/runtimeConfig-custom-server.test.ts src/__tests__/components/ServerSettingsPanel.test.tsx src/__tests__/helpers/auth.test.ts src/__tests__/services/environment.test.ts src/__tests__/utils/supabase-storage-key.test.ts src/__tests__/services/command-registry-extended.test.ts
+      - name: Type check and lint
+        run: pnpm lint
+      - name: Validate preparation script
+        run: node --test scripts/prepare-selfhost.test.mjs
+
+  desktop:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+            target: x86_64-pc-windows-msvc
+            targets: x86_64-pc-windows-msvc
+            bundles: nsis
+          - os: windows-latest
+            name: windows-arm64
+            target: aarch64-pc-windows-msvc
+            targets: aarch64-pc-windows-msvc
+            bundles: nsis
+          - os: macos-latest
+            name: macos-universal
+            target: universal-apple-darwin
+            targets: x86_64-apple-darwin,aarch64-apple-darwin
+            bundles: dmg
+          - os: ubuntu-22.04
+            name: linux-x64
+            target: x86_64-unknown-linux-gnu
+            targets: x86_64-unknown-linux-gnu
+            bundles: deb,rpm
+          - os: ubuntu-22.04-arm
+            name: linux-arm64
+            target: aarch64-unknown-linux-gnu
+            targets: aarch64-unknown-linux-gnu
+            bundles: deb,rpm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize build submodules
+        run: git submodule update --init --recursive packages/foliate-js packages/simplecc-wasm packages/js-mdict packages/qcms packages/tauri apps/readest-app/src-tauri/plugins/tauri-plugin-turso apps/readest-app/src-tauri/plugins/tauri-plugin-webview-upgrade
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.targets }}
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          key: selfhost-${{ matrix.name }}
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfontconfig-dev libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils libnss3 libgbm-dev libasound2-dev libudev-dev libxkbcommon-x11-0 rpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @readest/readest-app setup-vendors
+      - name: Prepare independent app identity
+        run: node apps/readest-app/scripts/prepare-selfhost.mjs
+      - name: Build desktop packages
+        working-directory: apps/readest-app
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: readest-selfhost-${{ matrix.name }}
+          path: |
+            target/**/bundle/nsis/*.exe
+            target/**/bundle/dmg/*.dmg
+            target/**/bundle/deb/*.deb
+            target/**/bundle/rpm/*.rpm
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    needs: verify
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize build submodules
+        run: git submodule update --init --recursive packages/foliate-js packages/simplecc-wasm packages/js-mdict packages/qcms packages/tauri apps/readest-app/src-tauri/plugins/tauri-plugin-turso apps/readest-app/src-tauri/plugins/tauri-plugin-webview-upgrade
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: zulu
+          java-version: '17'
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
+      - run: sdkmanager 'ndk;28.2.13676358'
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          key: selfhost-android
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @readest/readest-app setup-vendors
+      - name: Prepare Android project
+        working-directory: apps/readest-app
+        run: |
+          node scripts/prepare-selfhost.mjs
+          pnpm tauri android init --ci --skip-targets-install
+          pnpm tauri icon ../../data/icons/readest-book.png
+          git restore src-tauri/gen/android/app
+          node scripts/prepare-selfhost.mjs --android
+      - name: Build APK (release when signing secrets exist; otherwise debug)
+        shell: bash
+        working-directory: apps/readest-app
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mode=--debug
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            test -n "$ANDROID_KEY_ALIAS"
+            test -n "$ANDROID_KEY_PASSWORD"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/selfhost.jks"
+            printf 'keyAlias=%s\npassword=%s\nstoreFile=%s\n' "$ANDROID_KEY_ALIAS" "$ANDROID_KEY_PASSWORD" "$RUNNER_TEMP/selfhost.jks" > src-tauri/gen/android/keystore.properties
+            mode=
+          fi
+          trap 'rm -f "$RUNNER_TEMP/selfhost.jks" src-tauri/gen/android/keystore.properties' EXIT
+          pnpm tauri android build --apk $mode
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: readest-selfhost-android-apk
+          path: apps/readest-app/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14

@@ -4,17 +4,23 @@ import type { User, AuthError } from '@supabase/supabase-js';
 // Mock supabase before importing the module under test
 const mockSetSession = vi.fn();
 const mockGetUser = vi.fn();
+const mockSignOut = vi.fn();
 
 vi.mock('@/utils/supabase', () => ({
   supabase: {
     auth: {
       setSession: (...args: unknown[]) => mockSetSession(...args),
       getUser: () => mockGetUser(),
+      signOut: (...args: unknown[]) => mockSignOut(...args),
     },
   },
 }));
 
-import { handleAuthCallback, parseOAuthCallbackUrl } from '@/helpers/auth';
+import {
+  clearAuthSessionForServerChange,
+  handleAuthCallback,
+  parseOAuthCallbackUrl,
+} from '@/helpers/auth';
 
 describe('parseOAuthCallbackUrl', () => {
   it('should extract error params from a failed deeplink callback', () => {
@@ -284,5 +290,26 @@ describe('handleAuthCallback', () => {
         refresh_token: 'my-refresh-token',
       });
     });
+  });
+});
+
+describe('server change session cleanup', () => {
+  it('clears old credentials even when sign-out fails and preserves local books', async () => {
+    localStorage.setItem('token', 'old-token');
+    localStorage.setItem('refresh_token', 'old-refresh');
+    localStorage.setItem('user', '{}');
+    localStorage.setItem('sb-old-auth-token', 'old-session');
+    localStorage.setItem('sb-old-auth-token-code-verifier', 'old-verifier');
+    localStorage.setItem('library', 'local-books');
+    mockSignOut.mockRejectedValueOnce(new Error('expired session'));
+    await clearAuthSessionForServerChange();
+    expect(mockSignOut).toHaveBeenCalledWith({ scope: 'local' });
+    expect(localStorage.getItem('token')).toBeNull();
+    expect(localStorage.getItem('refresh_token')).toBeNull();
+    expect(localStorage.getItem('user')).toBeNull();
+    expect(localStorage.getItem('sb-old-auth-token')).toBeNull();
+    expect(localStorage.getItem('sb-old-auth-token-code-verifier')).toBeNull();
+    expect(localStorage.getItem('library')).toBe('local-books');
+    localStorage.clear();
   });
 });
