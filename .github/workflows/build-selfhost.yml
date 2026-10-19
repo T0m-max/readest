@@ -151,8 +151,10 @@ jobs:
       - run: pnpm --filter @readest/readest-app setup-vendors
       - name: Prepare Android project
         working-directory: apps/readest-app
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
         run: |
-          node scripts/prepare-selfhost.mjs
+          node scripts/prepare-selfhost.mjs --android
           pnpm tauri android init --ci --skip-targets-install
           pnpm tauri icon ../../data/icons/readest-book.png
           git restore src-tauri/gen/android/app
