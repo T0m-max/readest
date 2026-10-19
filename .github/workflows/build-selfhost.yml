@@ -171,6 +171,8 @@ jobs:
         working-directory: apps/readest-app
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_PROFILE_DEV_STRIP: symbols
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
