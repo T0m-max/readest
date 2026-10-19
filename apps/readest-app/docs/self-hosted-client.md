@@ -50,13 +50,26 @@ app does not inherit the official app's Apple/Google provider registrations.
 
 ## Build with GitHub Actions
 
-The **Build self-hosted clients** workflow is manual. Validate the web app and
-Apple Silicon client locally before starting the full platform matrix. After
-the workflow is present on the default branch, use **Actions → Build self-hosted
-clients → Run workflow** and select the branch to package. Failed jobs can be
-rerun from the run page. No iOS job is included.
+The **Build self-hosted clients** workflow is manual. Use **Actions → Build
+self-hosted clients → Run workflow**. It always packages `feat/self-hosted-server`,
+pins its commit before building, and uses that same commit for every platform
+and the release tag. Only the focused self-hosted tests, type/lint checks and
+packaging-script tests run. No iOS job is included.
 
-Download the ZIPs from the run's **Artifacts** section (retained for 14 days):
+After every platform succeeds, installers are published directly under
+[GitHub Releases](https://github.com/T0m-max/readest/releases) as a prerelease
+named `selfhost-v<version>-<run number>-<attempt>`. Download the EXE, DMG, DEB,
+RPM or APK directly from its **Assets** section. Platform prefixes avoid
+filename collisions; `SHA256SUMS` lists the installer checksums. An incomplete
+build is not published, and an upload failure leaves an unpublished draft.
+
+The upstream workflows are restricted to `readest/readest`; this fork skips
+their full PR suite, Nix builds, nightly runs, Docker publishing, CodeQL,
+Android emulator tests and official release/deployment jobs. They remain in
+Git for upstream maintenance. The manual entry is also registered on `main`,
+without merging the feature's application code into `main`.
+
+The run's **Artifacts** section also retains ZIPs for 14 days:
 
 | Artifact | Package |
 | --- | --- |
