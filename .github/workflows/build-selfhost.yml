@@ -2,8 +2,6 @@ name: Build self-hosted clients
 
 on:
   workflow_dispatch:
-  push:
-    branches: [feat/self-hosted-server]
 
 permissions:
   contents: read

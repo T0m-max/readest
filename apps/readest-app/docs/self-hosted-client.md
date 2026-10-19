@@ -50,10 +50,11 @@ app does not inherit the official app's Apple/Google provider registrations.
 
 ## Build with GitHub Actions
 
-The **Build self-hosted clients** workflow runs when this feature branch is
-pushed. After the workflow is present on the default branch, **Actions → Build
-self-hosted clients → Run workflow** also supports manual builds of a selected
-branch. Failed jobs can be rerun from the run page. No iOS job is included.
+The **Build self-hosted clients** workflow is manual. Validate the web app and
+Apple Silicon client locally before starting the full platform matrix. After
+the workflow is present on the default branch, use **Actions → Build self-hosted
+clients → Run workflow** and select the branch to package. Failed jobs can be
+rerun from the run page. No iOS job is included.
 
 Download the ZIPs from the run's **Artifacts** section (retained for 14 days):
 
