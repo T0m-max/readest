@@ -63,6 +63,19 @@ RPM or APK directly from its **Assets** section. Platform prefixes avoid
 filename collisions; `SHA256SUMS` lists the installer checksums. An incomplete
 build is not published, and an upload failure leaves an unpublished draft.
 
+GitHub limits each Release asset to less than 2 GiB. Oversized debug APKs are
+published as `.apk.zip`; extract the APK before installation. Compression does
+not change the APK or its signature. Future debug builds omit Rust debug
+information and strip symbols to reduce the package size.
+
+If only publication failed, use **Actions → Recover self-hosted Release
+uploads → Run workflow**, select `feat/self-hosted-server`, and enter the
+original build's numeric run ID and existing draft Release tag. This validates
+all platform jobs and uploads the retained artifacts without recompiling.
+Review the completed draft in **Releases** and publish it there. Artifacts
+must still be within their retention period. The draft must target the same
+commit as the original build; published releases cannot be overwritten.
+
 The upstream workflows are restricted to `readest/readest`; this fork skips
 their full PR suite, Nix builds, nightly runs, Docker publishing, CodeQL,
 Android emulator tests and official release/deployment jobs. They remain in

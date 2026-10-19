@@ -1,0 +1,62 @@
+name: Recover self-hosted Release uploads
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful feature-branch build run ID (all platform jobs must have passed)
+        required: true
+        type: string
+      draft_tag:
+        description: Existing unpublished Release tag targeting the original build commit
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: selfhost-release-${{ inputs.build_run_id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'T0m-max/readest'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SELFHOST_ARTIFACT_RUN_ID: ${{ inputs.build_run_id }}
+      SELFHOST_DRAFT_TAG: ${{ inputs.draft_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: feat/self-hosted-server
+          path: publisher
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: 24
+      - name: Validate the original platform builds
+        id: build
+        run: node publisher/scripts/validate-selfhost-build.mjs
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.build.outputs.commit }}
+          path: source
+          sparse-checkout: apps/readest-app/package.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run_id }}
+          pattern: readest-selfhost-*
+          path: source/selfhost-artifacts
+          merge-multiple: false
+      - name: Upload the existing installers to the draft
+        working-directory: source
+        env:
+          SELFHOST_BUILD_SHA: ${{ steps.build.outputs.commit }}
+        run: node ../publisher/scripts/publish-selfhost-release.mjs

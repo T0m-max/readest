@@ -11,7 +11,18 @@ assert.match(commit, /^[a-f0-9]{40}$/);
 assert.match(process.env.GITHUB_RUN_NUMBER ?? '', /^\d+$/);
 assert.match(process.env.GITHUB_RUN_ATTEMPT ?? '', /^\d+$/);
 const { version } = JSON.parse(fs.readFileSync('apps/readest-app/package.json', 'utf8'));
-const tag = `selfhost-v${version}-${process.env.GITHUB_RUN_NUMBER}-${process.env.GITHUB_RUN_ATTEMPT}`;
+const artifactRun = process.env.SELFHOST_ARTIFACT_RUN_ID;
+if (artifactRun) assert.match(artifactRun, /^\d+$/);
+const tag = artifactRun ? process.env.SELFHOST_DRAFT_TAG : `selfhost-v${version}-${process.env.GITHUB_RUN_NUMBER}-${process.env.GITHUB_RUN_ATTEMPT}`;
+assert.match(tag ?? '', /^selfhost-v[\w.-]+$/);
+if (artifactRun) {
+  const draft = JSON.parse(execFileSync('gh', [
+    'release', 'view', tag, '--repo', repository, '--json', 'isDraft,targetCommitish',
+  ], { encoding: 'utf8' }));
+  assert.equal(draft.isDraft, true, 'Recovery requires an unpublished draft');
+  assert.equal(draft.targetCommitish, commit, 'Draft must target the original build commit');
+}
+const assetSizeLimit = 2 ** 31;
 const requiredPackages = {
   'windows-x64': ['.exe'],
   'windows-arm64': ['.exe'],
@@ -36,10 +47,18 @@ for (const [platform, extensions] of Object.entries(requiredPackages)) {
     assert.ok(files.some(file => file.endsWith(extension)), `${artifact} is missing ${extension}`);
   }
   for (const file of files) {
-    const name = `${artifact}-${path.basename(file).replace(/[^\w.-]/g, '-')}`;
+    const oversized = fs.statSync(file).size >= assetSizeLimit;
+    assert.ok(!oversized || file.endsWith('.apk'), `Release asset must be under 2 GiB: ${file}`);
+    const name = `${artifact}-${path.basename(file).replace(/[^\w.-]/g, '-')}${oversized ? '.zip' : ''}`;
     const destination = path.join(staging, name);
     assert.ok(!fs.existsSync(destination), `Duplicate release asset: ${name}`);
-    fs.copyFileSync(file, destination);
+    if (oversized) {
+      // Preserve the APK bytes and signature while meeting GitHub's asset limit.
+      execFileSync('zip', ['-q', '-j', destination, file], { stdio: 'inherit' });
+    } else {
+      fs.copyFileSync(file, destination);
+    }
+    assert.ok(fs.statSync(destination).size < assetSizeLimit, `Release asset must be under 2 GiB: ${name}`);
     const hash = createHash('sha256');
     for await (const chunk of fs.createReadStream(destination)) hash.update(chunk);
     checksums.push(`${hash.digest('hex')}  ${name}`);
@@ -54,15 +73,21 @@ const notesFile = path.join(staging, 'RELEASE_NOTES.md');
 fs.writeFileSync(notesFile, [
   'Self-hosted client build from `feat/self-hosted-server`.',
   `Source commit: \`${commit}\`.`,
+  ...(artifactRun ? [`Original build: https://github.com/${repository}/actions/runs/${artifactRun}`] : []),
   '',
-  'Download the installer for your platform below; the APK can be downloaded directly.',
+  'Download the installer for your platform below. If the APK is provided as .apk.zip, extract it before installation; its signature is unchanged.',
   'Desktop packages are unsigned. Android uses a debug signature unless release-signing secrets are configured.',
   'Automatic updates are disabled. SHA256SUMS contains the checksums of all installers.',
   '',
 ].join('\n'));
 
 // Keep the release private until every installer has finished uploading.
-execFileSync('gh', [
+if (artifactRun) {
+  // Older builds can contain workflows differing from main. Uploading to the
+  // existing draft works with GITHUB_TOKEN; publishing it uses the owner's UI.
+  execFileSync('gh', ['release', 'upload', tag, '--repo', repository, '--clobber', ...assets], { stdio: 'inherit' });
+} else {
+  execFileSync('gh', [
   'release', 'create', tag,
   '--repo', repository,
   '--target', commit,
@@ -70,13 +95,16 @@ execFileSync('gh', [
   '--notes-file', notesFile,
   '--draft', '--prerelease', '--latest=false',
   ...assets,
-], { stdio: 'inherit' });
-execFileSync('gh', [
+  ], { stdio: 'inherit' });
+  execFileSync('gh', [
   'release', 'edit', tag, '--repo', repository, '--draft=false',
-], { stdio: 'inherit' });
+  ], { stdio: 'inherit' });
+}
 
 const url = `https://github.com/${repository}/releases/tag/${tag}`;
 if (process.env.GITHUB_STEP_SUMMARY) {
-  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `[Download Readest Selfhost](${url})\n`);
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, artifactRun
+    ? `Installers uploaded to draft \`${tag}\`. Review the assets and publish it from GitHub Releases.\n`
+    : `[Download Readest Selfhost](${url})\n`);
 }
 console.log(url);

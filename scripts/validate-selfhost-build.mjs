@@ -1,0 +1,20 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+
+const repository = process.env.GITHUB_REPOSITORY;
+const runId = process.env.SELFHOST_ARTIFACT_RUN_ID ?? '';
+assert.equal(repository, 'T0m-max/readest');
+assert.match(runId, /^\d+$/);
+const api = endpoint => JSON.parse(execFileSync('gh', ['api', endpoint], { encoding: 'utf8' }));
+const run = api(`repos/${repository}/actions/runs/${runId}`);
+assert.equal(run.path, '.github/workflows/build-selfhost.yml');
+assert.equal(run.head_branch, 'feat/self-hosted-server');
+assert.equal(run.event, 'workflow_dispatch');
+assert.equal(run.status, 'completed');
+assert.match(run.head_sha, /^[a-f0-9]{40}$/);
+const { jobs } = api(`repos/${repository}/actions/runs/${runId}/jobs?per_page=100`);
+const builds = jobs.filter(job => job.name === 'verify' || job.name === 'android' || job.name.startsWith('desktop ('));
+assert.equal(builds.length, 7, 'Expected verification, Android and five desktop build jobs');
+assert.ok(builds.every(job => job.conclusion === 'success'), 'All build jobs must have succeeded');
+fs.appendFileSync(process.env.GITHUB_OUTPUT, `commit=${run.head_sha}\n`);
