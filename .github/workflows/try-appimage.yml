@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   appimage:
+    if: github.repository == 'readest/readest'
     strategy:
       fail-fast: false
       matrix:
