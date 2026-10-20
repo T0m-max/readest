@@ -1,0 +1,16 @@
+{$DOMAIN} {
+	@supabase path /auth/v1 /auth/v1/* /rest/v1 /rest/v1/*
+	handle @supabase {
+		reverse_proxy kong:8000
+	}
+
+	# Preserve both the bucket prefix and Host: they are part of S3 signatures.
+	@objects path /{$S3_BUCKET_NAME} /{$S3_BUCKET_NAME}/*
+	handle @objects {
+		reverse_proxy minio:9000
+	}
+
+	handle {
+		reverse_proxy client:3000
+	}
+}

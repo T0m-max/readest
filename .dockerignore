@@ -22,6 +22,7 @@ out
 
 # Local env files
 docker/.env
+docker/server/backups
 .env*.local
 **/.env*.local
 

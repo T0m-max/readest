@@ -1,0 +1,210 @@
+name: readest-server
+
+x-service: &service
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  proxy:
+    <<: *service
+    image: caddy:2.11.7-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?Run python3 init-env.py first}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-readest-files}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      client:
+        condition: service_healthy
+
+  db:
+    <<: *service
+    image: supabase/postgres:15.8.1.085
+    volumes:
+      - ../volumes/db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:ro
+      - ../volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:ro
+      - ../volumes/db/init/schema.sql:/docker-entrypoint-initdb.d/init-scripts/100-schema.sql:ro
+      - ../volumes/db/migrations:/readest-migrations:ro
+      - ../volumes/db/apply-migrations.sh:/docker-entrypoint-initdb.d/zz-readest-migrations.sh:ro
+      - db-data:/var/lib/postgresql/data
+      - db-config:/etc/postgresql-custom
+    environment:
+      POSTGRES_HOST: /var/run/postgresql
+      PGPORT: "5432"
+      POSTGRES_PORT: "5432"
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Missing database password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Missing database password}
+      PGDATABASE: postgres
+      POSTGRES_DB: postgres
+      JWT_SECRET: ${JWT_SECRET:?Missing JWT secret}
+      JWT_EXP: "3600"
+    command: [postgres, -c, config_file=/etc/postgresql/postgresql.conf, -c, log_min_messages=fatal]
+    healthcheck:
+      # TCP is available only after the image finishes first-boot initialization.
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, postgres, -d, postgres]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  auth:
+    <<: *service
+    image: supabase/gotrue:v2.185.0
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: "9999"
+      API_EXTERNAL_URL: ${PUBLIC_URL:?Missing public URL}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+      GOTRUE_SITE_URL: ${PUBLIC_URL}
+      GOTRUE_URI_ALLOW_LIST: ${PUBLIC_URL}/**,readest-selfhost://**
+      GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP:-true}
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: "3600"
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM:-false}
+      GOTRUE_SMTP_HOST: ${SMTP_HOST:-}
+      GOTRUE_SMTP_PORT: ${SMTP_PORT:-587}
+      GOTRUE_SMTP_USER: ${SMTP_USER:-}
+      GOTRUE_SMTP_PASS: ${SMTP_PASS:-}
+      GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL:-}
+      GOTRUE_SMTP_SENDER_NAME: Readest
+    healthcheck:
+      test: [CMD, wget, --spider, -q, http://127.0.0.1:9999/health]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  rest:
+    <<: *service
+    image: postgrest/postgrest:v14.3
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/postgres
+      PGRST_DB_SCHEMAS: public,graphql_public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
+      PGRST_APP_SETTINGS_JWT_EXP: "3600"
+
+  kong:
+    <<: *service
+    image: kong:2.8.1
+    depends_on:
+      auth:
+        condition: service_healthy
+      rest:
+        condition: service_started
+    volumes:
+      - ../volumes/api/kong.yml:/home/kong/temp.yml:ro
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth
+      KONG_NGINX_WORKER_PROCESSES: "2"
+      SUPABASE_ANON_KEY: ${ANON_KEY:?Missing anonymous JWT}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY:?Missing service JWT}
+    entrypoint: bash -c 'eval "echo \"$$(cat ~/temp.yml)\"" > ~/kong.yml && /docker-entrypoint.sh kong docker-start'
+    healthcheck:
+      test: [CMD, kong, health]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  minio:
+    <<: *service
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Missing object storage user}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Missing object storage password}
+    command: server --console-address ":9001" /data
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: [CMD, mc, ready, local]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  minio-setup:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-readest-files}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mc alias set readest http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "readest/$$S3_BUCKET_NAME"
+
+  client:
+    <<: *service
+    image: ${READEST_IMAGE:-readest-selfhost:server}
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: production-stage
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-docker.io/library/node:24-slim@sha256:24dc26ef1e3c3690f27ebc4136c9c186c3133b25563ae4d7f0692e4d1fe5db0e}
+        NEXT_PUBLIC_APP_PLATFORM: web
+    pull_policy: never
+    depends_on:
+      kong:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_PUBLIC_URL: ${PUBLIC_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_ADMIN_KEY: ${SERVICE_ROLE_KEY}
+      API_BASE_URL: ${PUBLIC_URL}
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: ${PUBLIC_URL}
+      S3_REGION: us-east-1
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-readest-files}
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      OBJECT_STORAGE_TYPE: s3
+      SELF_HOSTED: "true"
+      STORAGE_FIXED_QUOTA: ${STORAGE_FIXED_QUOTA:-1073741824}
+      TRANSLATION_FIXED_QUOTA: ${TRANSLATION_FIXED_QUOTA:-50000}
+      FONT_BASE_URL: ${FONT_BASE_URL:-}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/runtime-config.js').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  db-data:
+  db-config:
+  minio-data:
+  caddy-data:
+  caddy-config:

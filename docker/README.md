@@ -1,5 +1,10 @@
 # Self-Hosting with Docker/Podman with Compose
 
+For a server deployment with one HTTPS domain, generated secrets and closed registration,
+see [服务器部署指南](server/README.md). It uses `server/compose.yaml` and includes backup,
+restore and upgrade instructions. The configurations below remain available for local
+development and existing deployments.
+
 ## Stack
 
 | service         | Image                       | Description                                       |
@@ -77,9 +82,9 @@ published tags:
 
 ### Build locally instead of pulling
 
-> **Prerequisites for local builds**: the `packages/foliate-js` and `packages/simplecc-wasm` git submodules must be initialized before building:
+> **Prerequisites for local builds**: initialize the web source submodules before building:
 > ```bash
-> git submodule update --init packages/foliate-js packages/simplecc-wasm
+> git submodule update --init packages/foliate-js packages/simplecc-wasm packages/js-mdict packages/qcms apps/readest-app/src-tauri/plugins/tauri-plugin-turso
 > ```
 > In GitHub Codespaces this is done automatically via `.devcontainer/devcontainer.json`.
 
