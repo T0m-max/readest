@@ -40,6 +40,27 @@ export function parseOAuthCallbackUrl(url: string): OAuthCallbackParams {
   };
 }
 
+export const clearAuthSessionForServerChange = async () => {
+  try {
+    await supabase.auth.signOut({ scope: 'local' });
+  } catch {
+    // Switching servers must still work when the previous session is broken.
+  } finally {
+    for (const key of Object.keys(localStorage)) {
+      if (
+        ['token', 'refresh_token', 'user', 'lastRedirectAt'].includes(key) ||
+        /^sb-.+-auth-token(?:-code-verifier)?$/.test(key)
+      ) {
+        localStorage.removeItem(key);
+      }
+    }
+  }
+};
+
+// Auth subscriptions and API endpoint constants are initialized at module load.
+// Reload after saving so every consumer starts with the same server and session.
+export const reloadForServerChange = () => window.location.reload();
+
 export function handleAuthCallback({
   accessToken,
   refreshToken,
