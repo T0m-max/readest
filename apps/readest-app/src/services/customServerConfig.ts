@@ -132,6 +132,15 @@ const isPrivateIpv4 = (hostname: string) => {
   );
 };
 
+const isLoopbackHost = (hostname: string) => {
+  const normalized = normalizeHostname(hostname);
+  return (
+    normalized === 'localhost' ||
+    normalized === '::1' ||
+    (normalized.startsWith('127.') && isPrivateIpv4(normalized))
+  );
+};
+
 const isLocalOrPrivateHost = (hostname: string) => {
   const normalized = normalizeHostname(hostname);
   return (
@@ -168,11 +177,12 @@ export const normalizeServerBaseUrl = (
 
   if (
     parsed.protocol === 'http:' &&
+    !isLoopbackHost(parsed.hostname) &&
     !(allowInsecureHttp && isLocalOrPrivateHost(parsed.hostname))
   ) {
     throw new CustomServerConfigError(
       'insecure-http',
-      'Insecure http is only allowed for local development servers.',
+      'HTTP requires a loopback address, or a private address in a development build.',
     );
   }
 

@@ -127,6 +127,39 @@ describe('customServerConfig', () => {
       );
     });
 
+    test.each([
+      'localhost',
+      '127.0.0.1',
+      '127.0.0.2',
+      '[::1]',
+    ])('allows HTTP on loopback %s in production with the development exception disabled', (host) => {
+      vi.stubEnv('NODE_ENV', 'production');
+      const url = `http://${host}:3000`;
+      expect(normalizeServerBaseUrl(`${url}/`)).toBe(url);
+      expect(normalizeServerBaseUrl(`${url}/`, { allowInsecureHttp: false })).toBe(url);
+    });
+
+    test.each([
+      '192.168.1.20',
+      '10.0.0.1',
+      '0.0.0.0',
+      'readest.local',
+      'localhost.example.com',
+      '127.0.0.1.example.com',
+      '[::2]',
+      'readest.example.com',
+    ])('rejects non-loopback HTTP on %s in production', (host) => {
+      vi.stubEnv('NODE_ENV', 'production');
+      expectConfigError(() => normalizeServerBaseUrl(`http://${host}:3000`), 'insecure-http');
+    });
+
+    test('rejects public HTTP even with the development exception enabled', () => {
+      expectConfigError(
+        () => normalizeServerBaseUrl('http://readest.example.com', { allowInsecureHttp: true }),
+        'insecure-http',
+      );
+    });
+
     test('allows local and private http when explicitly enabled', () => {
       expect(normalizeServerBaseUrl('http://localhost:3000/', { allowInsecureHttp: true })).toBe(
         'http://localhost:3000',
@@ -141,6 +174,33 @@ describe('customServerConfig', () => {
   });
 
   describe('fetchPublicClientConfig', () => {
+    test('discovers and persists a loopback server in a production native client', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('NEXT_PUBLIC_APP_PLATFORM', 'tauri');
+      setCustomServerConfigStorageAdapter(makeMemoryStorage());
+      tauriFetchMock
+        .mockResolvedValueOnce(new Response('', { status: 404 }))
+        .mockResolvedValueOnce(new Response('', { status: 404 }))
+        .mockResolvedValueOnce(
+          new Response(
+            `window.__READEST_RUNTIME_CONFIG={"apiBaseUrl":"http://localhost:3000","supabaseUrl":"http://localhost:8000","supabaseAnonKey":"${anonJwt}"};`,
+          ),
+        );
+
+      const config = await resolveCustomServerConfig('http://localhost:3000', {
+        allowInsecureHttp: false,
+      });
+      await saveCustomServerConfig(config);
+
+      expect(loadCustomServerConfig()).toEqual(config);
+      expect(config.apiBaseUrl).toBe('http://localhost:3000');
+      expect(config.supabaseUrl).toBe('http://localhost:8000');
+      expect(tauriFetchMock).toHaveBeenLastCalledWith(
+        'http://localhost:3000/runtime-config.js',
+        expect.objectContaining({ method: 'GET' }),
+      );
+    });
+
     test('uses well-known config first', async () => {
       const fetchImpl = vi.fn(async () =>
         jsonResponse({
@@ -445,6 +505,37 @@ describe('customServerConfig', () => {
       apiBaseUrl: '',
       supabaseUrl: 'https://supabase.example.com/',
       supabaseAnonKey: anonJwt,
+    });
+
+    test('probes loopback API and Supabase URLs in production compatibility mode', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      const createManualConfig = getCreateManualConfig()!;
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(new Response('', { status: 403 }))
+        .mockResolvedValueOnce(jsonResponse({ external: {} })) as unknown as typeof fetch;
+
+      const config = await createManualConfig(
+        {
+          serverBaseUrl: 'http://localhost:3000',
+          supabaseUrl: 'http://127.0.0.1:8000',
+          supabaseAnonKey: anonJwt,
+        },
+        { fetchImpl },
+      );
+
+      expect(config.apiBaseUrl).toBe('http://localhost:3000');
+      expect(config.supabaseUrl).toBe('http://127.0.0.1:8000');
+      expect(fetchImpl).toHaveBeenNthCalledWith(
+        1,
+        'http://localhost:3000/api/sync',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(fetchImpl).toHaveBeenNthCalledWith(
+        2,
+        'http://127.0.0.1:8000/auth/v1/settings',
+        expect.objectContaining({ method: 'GET' }),
+      );
     });
 
     test.each([200, 401, 403])('accepts Readest API HTTP %i as reachable', async (status) => {

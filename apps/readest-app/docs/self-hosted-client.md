@@ -8,7 +8,7 @@ history and workflows remain available. Changes live on `feat/self-hosted-server
 ## Select a server
 
 In the desktop or Android app, open **Settings → Server**, or **Self-hosted
-server** on the sign-in screen. Enter the HTTPS URL, test it, then save.
+server** on the sign-in screen. Enter the server URL, test it, then save.
 Saving or resetting clears the previous login and reloads the app, so the API,
 Supabase client and synchronization endpoints all start with the selected server.
 Local books are retained. Accounts and cloud libraries belong to their server;
@@ -39,8 +39,11 @@ compatibility** and enter its public Supabase URL and anon/publishable key. The
 API URL defaults to the server URL. Connection testing and saving probe `/api/sync`
 (200, 401 or 403 accepted) and Supabase `/auth/v1/settings` before saving.
 Service-role keys, secret keys and private server settings must never be entered.
-Production clients require HTTPS with a valid certificate. Web clients continue
-using their deployed configuration; the override is native-client only.
+Production clients require HTTPS with a valid certificate, except for HTTP on
+loopback addresses (`localhost`, IPv4 `127.0.0.0/8`, and IPv6 `::1`) for testing
+a server on the same device. Other private-network HTTP addresses remain limited
+to development builds. Web clients continue using their deployed configuration;
+the override is native-client only.
 
 Configure the Supabase redirect allowlist to include
 `readest-selfhost://auth-callback` for OAuth and email links. Enable and configure
