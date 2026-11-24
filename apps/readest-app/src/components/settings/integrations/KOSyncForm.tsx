@@ -7,7 +7,7 @@ import { useTranslation } from '@/hooks/useTranslation';
 import { useSettingsStore } from '@/store/settingsStore';
 import { eventDispatcher } from '@/utils/event';
 import { KOSyncClient } from '@/services/sync/KOSyncClient';
-import { KOSyncChecksumMethod, KOSyncStrategy } from '@/types/settings';
+import { KOSyncChecksumMethod, KOSyncFilenameFormat, KOSyncStrategy } from '@/types/settings';
 import { debounce } from '@/utils/debounce';
 import { getOSPlatform } from '@/utils/misc';
 import {
@@ -16,8 +16,10 @@ import {
   parseCustomHeadersInput,
 } from '@/utils/customHeaders';
 import SubPageHeader from '../SubPageHeader';
-import { SectionTitle, SettingLabel, SettingsSelect } from '../primitives';
+import { SectionTitle, SettingLabel, SettingsSelect, Tips } from '../primitives';
 import { Toggle } from '@/components/primitives/toggle';
+import { allowsSelfSignedCert } from '@/utils/tls';
+import SelfSignedCertSwitch from './SelfSignedCertSwitch';
 
 interface KOSyncFormProps {
   onBack: () => void;
@@ -38,6 +40,10 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
     formatCustomHeadersInput(settings.kosync.customHeaders),
   );
   const [headerError, setHeaderError] = useState('');
+  // A connection accepts self-signed certificates unless the user turns it off.
+  const [allowSelfSignedCert, setAllowSelfSignedCert] = useState(
+    allowsSelfSignedCert(settings.kosync),
+  );
 
   useEffect(() => {
     const formatOsName = (name: string): string => {
@@ -130,6 +136,7 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
       password,
       deviceName,
       customHeaders: hasCustomHeaders(parsedHeaders.headers) ? parsedHeaders.headers : undefined,
+      allowSelfSignedCert,
       enabled: true,
     };
     const client = new KOSyncClient(config);
@@ -177,6 +184,26 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
     const kosync = {
       ...settings.kosync,
       checksumMethod: e.target.value as KOSyncChecksumMethod,
+    };
+    const newSettings = { ...settings, kosync };
+    setSettings(newSettings);
+    await saveSettings(envConfig, newSettings);
+  };
+
+  const handleFilenameFormatChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const kosync = {
+      ...settings.kosync,
+      filenameFormat: e.target.value as KOSyncFilenameFormat,
+    };
+    const newSettings = { ...settings, kosync };
+    setSettings(newSettings);
+    await saveSettings(envConfig, newSettings);
+  };
+
+  const handleToggleSelfSignedCert = async () => {
+    const kosync = {
+      ...settings.kosync,
+      allowSelfSignedCert: !allowsSelfSignedCert(settings.kosync),
     };
     const newSettings = { ...settings, kosync };
     setSettings(newSettings);
@@ -239,9 +266,27 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
                   value={settings.kosync.checksumMethod}
                   onChange={handleChecksumMethodChange}
                   ariaLabel={_('Checksum Method')}
-                  options={[{ value: 'binary', label: _('File Content') }]}
+                  options={[
+                    { value: 'binary', label: _('File Content') },
+                    { value: 'filename', label: _('File Name') },
+                  ]}
                 />
               </div>
+              {settings.kosync.checksumMethod === 'filename' && (
+                <div className='flex min-h-14 items-center justify-between gap-3 px-4'>
+                  <SettingLabel>{_('File Name Format')}</SettingLabel>
+                  <SettingsSelect
+                    value={settings.kosync.filenameFormat ?? 'original'}
+                    onChange={handleFilenameFormatChange}
+                    ariaLabel={_('File Name Format')}
+                    options={[
+                      { value: 'original', label: _('Original') },
+                      { value: 'author-title', label: _('Author - Title') },
+                      { value: 'title-author', label: _('Title - Author') },
+                    ]}
+                  />
+                </div>
+              )}
               {/* Mirrors KOReader's "Send document metadata" setting: include
                   filename/title/authors in progress uploads so custom sync
                   servers can tell which book a document hash is. Off by
@@ -265,6 +310,24 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
               </div>
             </div>
           </div>
+
+          {settings.kosync.checksumMethod === 'filename' && (
+            <Tips>
+              <li>
+                {(settings.kosync.filenameFormat ?? 'original') === 'original'
+                  ? _('File Name uses the original filename, including its extension.')
+                  : _(
+                      'File Name Format builds the name from the title and authors, like KOReader names OPDS downloads.',
+                    )}
+              </li>
+              <li>{_("Set a single book's file name in the reader's Sync Info.")}</li>
+            </Tips>
+          )}
+
+          <SelfSignedCertSwitch
+            checked={allowsSelfSignedCert(settings.kosync)}
+            onChange={handleToggleSelfSignedCert}
+          />
 
           <div className='space-y-1.5'>
             <SectionTitle as='label' htmlFor='kosync-custom-headers' className='block'>
@@ -331,6 +394,11 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
                 onChange={(e) => setUrl(e.target.value)}
               />
             </div>
+
+            <SelfSignedCertSwitch
+              checked={allowSelfSignedCert}
+              onChange={() => setAllowSelfSignedCert(!allowSelfSignedCert)}
+            />
 
             <div className='space-y-1.5'>
               <SectionTitle as='label' htmlFor='kosync-username' className='block'>

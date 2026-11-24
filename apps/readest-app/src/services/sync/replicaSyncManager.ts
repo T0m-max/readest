@@ -1,7 +1,7 @@
 import { MAX_PUSH_BATCH } from '@/types/replica';
 import { HlcGenerator, hlcCompare, hlcMax, mergeFields } from '@/libs/crdt';
 import { isSyncError } from '@/libs/errors';
-import type { Hlc, ReplicaRow } from '@/types/replica';
+import type { FieldsObject, Hlc, ReplicaRow } from '@/types/replica';
 import type { ReplicaSyncClient } from '@/libs/replicaSyncClient';
 
 /** "This backend's kind allowlist predates the client" — never a row/data problem. */
@@ -35,6 +35,8 @@ export interface ReplicaSyncManagerOpts {
   /** Called at push time: returns the row to actually send, or null to skip it. */
   prepareRow?: (row: ReplicaRow) => Promise<ReplicaRow | null>;
   onAcknowledged?: (row: ReplicaRow) => void;
+  /** Called once per push batch in which the server refused rows for the device clock. */
+  onClockSkew?: () => void;
 }
 
 interface DirtyKey {
@@ -92,6 +94,12 @@ const mergeDirtyRows = (a: ReplicaRow, b: ReplicaRow): ReplicaRow => {
   };
 };
 
+// The apply path decrypts envelopes in place (decryptRowFields): a queued
+// envelope handed to it must be a copy, or the plaintext lands in the queue
+// and the next push sends it.
+const copyEnvelopes = (fields: FieldsObject): FieldsObject =>
+  Object.fromEntries(Object.entries(fields).map(([key, envelope]) => [key, { ...envelope }]));
+
 export class ReplicaSyncManager {
   private readonly dirty = new Map<string, ReplicaRow>();
   /**
@@ -110,6 +118,12 @@ export class ReplicaSyncManager {
    * stores a fresh object, so the next edit is tried again.
    */
   private readonly rejectedRows = new WeakSet<ReplicaRow>();
+  /**
+   * Rows pushed while a pull was in flight. That pull's answer can predate
+   * the push, and the push already took them out of `dirty` (#7670).
+   */
+  private readonly pushedDuringPull = new Map<string, ReplicaRow>();
+  private pullsInFlight = 0;
   private readonly debounceMs: number;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private autoSyncInstalled = false;
@@ -172,6 +186,11 @@ export class ReplicaSyncManager {
 
     const pushed: number[] = [];
     let deferred: unknown = null;
+    let clockSkewed = false;
+    const reject = (err: unknown, row: ReplicaRow) => {
+      this.rejectedRows.add(row);
+      if (isSyncError(err) && err.code === 'CLOCK_SKEW') clockSkewed = true;
+    };
     try {
       await this.opts.client.push(snapshot);
       snapshot.forEach((_, i) => pushed.push(i));
@@ -205,7 +224,7 @@ export class ReplicaSyncManager {
             continue;
           }
           if (indexes.length === 1) {
-            if (isRowRejection(kindErr)) this.rejectedRows.add(queued[indexes[0]!]!);
+            if (isRowRejection(kindErr)) reject(kindErr, queued[indexes[0]!]!);
             else deferred ??= kindErr;
             continue;
           }
@@ -216,7 +235,7 @@ export class ReplicaSyncManager {
             pushed.push(i);
           } catch (rowErr) {
             if (isUnknownKindError(rowErr)) this.unsupportedKinds.add(kind);
-            else if (isRowRejection(rowErr)) this.rejectedRows.add(queued[i]!);
+            else if (isRowRejection(rowErr)) reject(rowErr, queued[i]!);
             else deferred ??= rowErr;
           }
         }
@@ -224,12 +243,20 @@ export class ReplicaSyncManager {
     }
     for (const i of pushed) {
       this.opts.onAcknowledged?.(snapshot[i]!);
+      if (this.pullsInFlight > 0) {
+        const earlier = this.pushedDuringPull.get(snapshotKeys[i]!);
+        this.pushedDuringPull.set(
+          snapshotKeys[i]!,
+          earlier ? mergeDirtyRows(earlier, snapshot[i]!) : snapshot[i]!,
+        );
+      }
       // Only the exact object we snapshotted may be dropped: a concurrent
       // `markDirty` replaces it with a merge that hasn't been pushed yet.
       if (this.dirty.get(snapshotKeys[i]!) === queued[i]) {
         this.dirty.delete(snapshotKeys[i]!);
       }
     }
+    if (clockSkewed) this.opts.onClockSkew?.();
     if (deferred) throw deferred;
   }
 
@@ -240,9 +267,11 @@ export class ReplicaSyncManager {
     // into the local store (e.g., apply-without-persist bug). Periodic
     // sync (visibility / online) keeps using the cursor.
     const since = opts && 'since' in opts ? (opts.since ?? null) : this.opts.cursorStore.get(kind);
-    const rows = await this.opts.client.pull(kind, since);
-    this.observeAndAdvanceCursor(kind, rows);
-    return rows;
+    return this.whilePulling(async () => {
+      const rows = await this.opts.client.pull(kind, since);
+      this.observeAndAdvanceCursor(kind, rows);
+      return this.withQueuedFields(rows);
+    });
   }
 
   /**
@@ -273,6 +302,14 @@ export class ReplicaSyncManager {
       kind,
       since: overrideSince ? (opts.since ?? null) : this.opts.cursorStore.get(kind),
     }));
+    return this.whilePulling(() => this.pullCursors(wanted, cursors, out));
+  }
+
+  private async pullCursors(
+    wanted: string[],
+    cursors: { kind: string; since: Hlc | null }[],
+    out: Map<string, ReplicaRow[]>,
+  ): Promise<Map<string, ReplicaRow[]>> {
     let results: { kind: string; rows: ReplicaRow[] }[];
     try {
       results = await this.opts.client.pullBatch(cursors);
@@ -303,9 +340,33 @@ export class ReplicaSyncManager {
     }
     for (const { kind, rows } of results) {
       this.observeAndAdvanceCursor(kind, rows);
-      out.set(kind, rows);
+      out.set(kind, this.withQueuedFields(rows));
     }
     return out;
+  }
+
+  private async whilePulling<T>(run: () => Promise<T>): Promise<T> {
+    this.pullsInFlight++;
+    try {
+      return await run();
+    } finally {
+      if (--this.pullsInFlight === 0) this.pushedDuringPull.clear();
+    }
+  }
+
+  // A push doesn't move the pull cursor, so a pull brings this device's own
+  // last push back. A change queued since then, or pushed while the pull was
+  // in flight, must not lose to that older copy (#7670): lay those fields over
+  // the pulled ones, the per-field merge the server makes once the push lands.
+  private withQueuedFields(rows: ReplicaRow[]): ReplicaRow[] {
+    return rows.map((row) => {
+      const key = dirtyKeyOf(row);
+      let fields = row.fields_jsonb;
+      for (const local of [this.pushedDuringPull.get(key), this.dirty.get(key)]) {
+        if (local) fields = mergeFields(fields, copyEnvelopes(local.fields_jsonb));
+      }
+      return fields === row.fields_jsonb ? row : { ...row, fields_jsonb: fields };
+    });
   }
 
   private observeAndAdvanceCursor(kind: string, rows: ReplicaRow[]): void {

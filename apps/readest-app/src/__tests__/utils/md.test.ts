@@ -179,6 +179,26 @@ describe('makeMarkdownBook', () => {
     expect(doc.body.textContent).not.toContain('$');
   });
 
+  // Pandoc's rule for $…$: a non-space right inside each $ and no digit right
+  // after the closing one. Prices stay text; CJK math needs no space before it.
+  it.each([
+    ['A price like $5 and $10 should stay text.', []],
+    ['It costs $5, or $10 with shipping.', []],
+    ['Between $20 and $30.', []],
+    ['A $ x $ with spaces inside stays text.', []],
+    ['Euler: $e^{i\\pi}+1=0$.', [null]],
+    ['是 $\\sqrt{12}$ 倍（记为 $N_T$）。', [null, null]],
+    ['$a$ and $b$', [null, null]],
+    ['Display $$ \\int_0^1 x^2dx $$ inline', ['block']],
+    ['A run of $$$x$$$ that opens no math stays text.', []],
+  ])('takes only math between $ signs as math: %s', async (text, displays) => {
+    const book = await make(`${text}\n`);
+    const doc = await book.sections[0]!.createDocument();
+    const maths = [...doc.getElementsByTagNameNS('http://www.w3.org/1998/Math/MathML', 'math')];
+    expect(maths.map((m) => m.getAttribute('display'))).toEqual(displays);
+    if (displays.length === 0) expect(doc.body.textContent).toContain(text);
+  });
+
   it('strips script and event handlers inside math', async () => {
     const book = await make(
       '$x$ <math><mi onclick="alert(1)">y</mi><script>alert(1)</script></math>\n',
@@ -276,6 +296,26 @@ describe('makeMarkdownBook', () => {
     expect(book.metadata.language).toBe('en');
     expect(book.metadata.author).toBe('');
     expect(await book.getCover()).toBeNull();
+  });
+
+  it('detects the language of the text when the frontmatter names none', async () => {
+    const book = await make(
+      '# Rozdział pierwszy\n\n' +
+        'Był piękny letni dzień, kiedy po raz pierwszy zobaczyłem morze. ' +
+        'Szliśmy razem przez las, a potem długo siedzieliśmy na plaży i rozmawialiśmy ' +
+        'o wszystkim, co wydarzyło się w ciągu ostatnich lat w naszym małym mieście.\n',
+      'Opowiadanie.md',
+    );
+    expect(book.metadata.language).toBe('pl');
+  });
+
+  it('keeps the frontmatter language over the detected one', async () => {
+    const book = await make(
+      '---\nlanguage: fr\n---\n\n' +
+        'Był piękny letni dzień, kiedy po raz pierwszy zobaczyłem morze. ' +
+        'Szliśmy razem przez las, a potem długo siedzieliśmy na plaży.\n',
+    );
+    expect(book.metadata.language).toBe('fr');
   });
 
   it('creates object URLs lazily and revokes every one on destroy', async () => {

@@ -1,4 +1,4 @@
-ARG NODE_IMAGE=docker.io/library/node:24-slim@sha256:24dc26ef1e3c3690f27ebc4136c9c186c3133b25563ae4d7f0692e4d1fe5db0e
+ARG NODE_IMAGE=docker.io/library/node:24-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 FROM ${NODE_IMAGE} AS dependencies
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
@@ -53,7 +53,11 @@ ENV BUILD_STANDALONE=true
 RUN test -f /app/packages/js-mdict/src/index.ts \
     && test -f src-tauri/plugins/tauri-plugin-turso/guest-js/index.ts \
     || { printf '\nERROR: Web source submodules are not initialized.\nRun: git submodule update --init packages/js-mdict apps/readest-app/src-tauri/plugins/tauri-plugin-turso\n\n'; exit 1; }
-RUN pnpm build-web
+# @serwist/next only emits the service worker (public/sw.js) from a webpack
+# build, so switch `next build` to webpack as `pnpm deploy` does. The webpack
+# build runs out of memory with Node's default heap; give it the 8 GB the
+# release workflows use.
+RUN pnpm patch-build-webpack && NODE_OPTIONS=--max-old-space-size=8192 pnpm build-web
 
 # Production runtime ships only the standalone server, its traced node_modules,
 # and the static/public assets — no pnpm, no source tree, no dev dependencies,

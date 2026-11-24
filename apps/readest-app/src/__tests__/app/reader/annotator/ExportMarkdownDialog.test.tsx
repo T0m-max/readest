@@ -1,3 +1,4 @@
+import { bookDataStoreHooks } from '@/__tests__/helpers/book-data-store-mock';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BooknoteGroup } from '@/types/book';
@@ -20,7 +21,7 @@ vi.mock('@/store/settingsStore', () => ({
 }));
 
 vi.mock('@/store/bookDataStore', () => ({
-  useBookDataStore: () => ({ getBookData: () => h.bookData }),
+  ...bookDataStoreHooks(() => ({ getBookData: () => h.bookData })),
 }));
 
 vi.mock('@/store/readerStore', () => ({
@@ -130,6 +131,32 @@ describe('ExportMarkdownDialog export actions', () => {
     expect(onExport).toHaveBeenCalledTimes(1);
     expect(onExport.mock.calls[0]?.[2]).toMatchObject({ share: true });
   });
+
+  // The Android share sheet offers no way to save the file to storage, so
+  // Export writes it through the system save dialog and Share keeps the sheet.
+  it('offers Export (to storage) and Share (share sheet) on Android', () => {
+    h.appService = { isAndroidApp: true };
+    const onExport = renderDialog();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+    expect(onExport).toHaveBeenCalledTimes(1);
+    expect(onExport.mock.calls[0]?.[2]).toMatchObject({ share: false });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Share' }));
+    expect(onExport).toHaveBeenCalledTimes(2);
+    expect(onExport.mock.calls[1]?.[2]).toMatchObject({ share: true });
+  });
+
+  it('styles the main action with btn-contrast', () => {
+    h.appService = { isAndroidApp: true };
+    renderDialog();
+    expect(screen.getByRole('button', { name: 'Share' }).className).toContain('btn-contrast');
+    cleanup();
+
+    h.appService = { isIOSApp: true };
+    renderDialog();
+    expect(screen.getByRole('button', { name: 'Export' }).className).toContain('btn-contrast');
+  });
 });
 
 describe('ExportMarkdownDialog highlight context', () => {
@@ -174,6 +201,29 @@ describe('ExportMarkdownDialog highlight context', () => {
     expect(onExport.mock.lastCall?.[0]).toContain(
       '> hello\n\n**Context**: Say hello to the world.',
     );
+  });
+});
+
+// Half past midnight is still the day before in UTC: the unit tests run in
+// Asia/Tokyo (vitest.config.mts).
+const localNov23 = new Date(2026, 10, 23, 0, 30);
+
+describe('ExportMarkdownDialog export date', () => {
+  beforeEach(() => {
+    h.appService = {};
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it('writes the local date the notes were exported on', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(localNov23);
+    const onExport = renderDialog();
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+    expect(onExport.mock.lastCall?.[0]).toContain('**Exported from Readest**: 2026-11-23');
   });
 });
 

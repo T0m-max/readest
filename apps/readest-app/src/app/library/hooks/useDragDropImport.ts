@@ -10,12 +10,16 @@ import { useSettingsStore } from '@/store/settingsStore';
 import { LibraryGroupByType } from '@/types/settings';
 import { ensureLibraryGroupByType } from '../utils/libraryUtils';
 import { BOOK_ACCEPT_FORMATS, SUPPORTED_BOOK_EXTS } from '@/services/constants';
-import { hasAllowedExtension } from '@/hooks/useFileSelector';
+import { hasAllowedExtension, toastSkippedBooks } from '@/hooks/useFileSelector';
+import { getFilename } from '@/utils/path';
 import { useSearchParams } from 'next/navigation';
 
 const hasSupportedBookExt = (name: string) => {
   return hasAllowedExtension(name, SUPPORTED_BOOK_EXTS);
 };
+
+const itemName = (item: File | string) =>
+  typeof item === 'string' ? getFilename(item) : item.name;
 
 export const useDragDropImport = () => {
   const _ = useTranslation();
@@ -40,12 +44,13 @@ export const useDragDropImport = () => {
       }
     }
 
-    const fileSelections: SelectedFile[] = fileItems
-      .filter((item) => hasSupportedBookExt(typeof item === 'string' ? item : item.name))
-      .map((item) => ({
-        file: typeof item === 'string' ? undefined : item,
-        path: typeof item === 'string' ? item : undefined,
-      }));
+    const supportedItems = fileItems.filter((item) => hasSupportedBookExt(itemName(item)));
+    const skippedItems = fileItems.filter((item) => !hasSupportedBookExt(itemName(item)));
+
+    const fileSelections: SelectedFile[] = supportedItems.map((item) => ({
+      file: typeof item === 'string' ? undefined : item,
+      path: typeof item === 'string' ? item : undefined,
+    }));
 
     if (fileSelections.length === 0 && directoryPaths.length === 0) {
       eventDispatcher.dispatch('toast', {
@@ -61,14 +66,28 @@ export const useDragDropImport = () => {
       impactFeedback('medium');
     }
 
+    // A mixed drop must not make the whitelist-dropped files vanish without a
+    // trace while the rest imports — the picker path names them for the same
+    // reason (#5959). An all-unsupported drop is answered above with the
+    // supported-format list instead.
+    const skipped = skippedItems.map(itemName);
+    // Folders first: import runs are serialized, and a folder imported after
+    // the loose files would toast its result over the one naming the skipped
+    // files (#6991).
+    await Promise.allSettled(
+      directoryPaths.map((path) => eventDispatcher.dispatch('import-book-directory', { path })),
+    );
     if (fileSelections.length > 0) {
+      // Reported with the import's own result: a toast of their own was
+      // replaced by its success or failure toast.
       eventDispatcher.dispatch('import-book-files', {
         files: fileSelections,
         groupId: group,
+        skipped,
       });
-    }
-    for (const dir of directoryPaths) {
-      eventDispatcher.dispatch('import-book-directory', { path: dir });
+    } else {
+      // Folders and unsupported files only: named once the folders are in.
+      toastSkippedBooks(_, skipped);
     }
   };
 

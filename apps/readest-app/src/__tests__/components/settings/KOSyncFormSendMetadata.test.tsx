@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -46,6 +47,75 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+});
+
+describe('KOSyncForm checksum method', () => {
+  test('offers filename matching, explains the method, and persists both methods', async () => {
+    render(<KOSyncForm onBack={vi.fn()} />);
+
+    const select = screen.getByRole('combobox', { name: 'Checksum Method' });
+    expect((select as HTMLSelectElement).value).toBe('binary');
+    expect(screen.getByRole('option', { name: 'File Name' })).toHaveProperty('value', 'filename');
+
+    fireEvent.change(select, { target: { value: 'filename' } });
+    await waitFor(() => {
+      expect(saveSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          kosync: expect.objectContaining({ checksumMethod: 'filename' }),
+        }),
+      );
+    });
+    expect(
+      screen.getByText('File Name uses the original filename, including its extension.'),
+    ).toBeTruthy();
+
+    fireEvent.change(select, { target: { value: 'binary' } });
+    await waitFor(() => {
+      expect(saveSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kosync: expect.objectContaining({ checksumMethod: 'binary' }) }),
+      );
+    });
+  });
+});
+
+describe('KOSyncForm file name format (#7864)', () => {
+  test('is offered only for File Name checksums and persists the chosen format', async () => {
+    render(<KOSyncForm onBack={vi.fn()} />);
+    expect(screen.queryByRole('combobox', { name: 'File Name Format' })).toBeNull();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Checksum Method' }), {
+      target: { value: 'filename' },
+    });
+    const format = await screen.findByRole('combobox', { name: 'File Name Format' });
+    expect((format as HTMLSelectElement).value).toBe('original');
+    expect(
+      [...(format as HTMLSelectElement).options].map((option) => [option.value, option.text]),
+    ).toEqual([
+      ['original', 'Original'],
+      ['author-title', 'Author - Title'],
+      ['title-author', 'Title - Author'],
+    ]);
+
+    fireEvent.change(format, { target: { value: 'author-title' } });
+    await waitFor(() => {
+      expect(saveSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          kosync: expect.objectContaining({
+            checksumMethod: 'filename',
+            filenameFormat: 'author-title',
+          }),
+        }),
+      );
+    });
+    expect(
+      screen.queryByText('File Name uses the original filename, including its extension.'),
+    ).toBeNull();
+    expect(
+      screen.getByText(
+        'File Name Format builds the name from the title and authors, like KOReader names OPDS downloads.',
+      ),
+    ).toBeTruthy();
+  });
 });
 
 describe('KOSyncForm Send Document Metadata setting', () => {

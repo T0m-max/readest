@@ -1,5 +1,7 @@
+// @vitest-environment happy-dom
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { applyPageTurnAttributes, getCapturedTurnStyle } from '@/app/reader/hooks/useCapturedTurn';
+import { useReaderStore } from '@/store/readerStore';
 import type { FoliateView } from '@/types/view';
 import type { ViewSettings } from '@/types/book';
 
@@ -150,6 +152,24 @@ describe('getCapturedTurnStyle', () => {
   });
 });
 
+describe('Page Flip', () => {
+  // The captured curl pipeline draws the flip; NativePageTurn asks the host.
+  it('runs the captured curl pipeline on Tauri', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_PLATFORM', 'tauri');
+    stubEngine({ startViewTransition: true, nestedGroups: true });
+    expect(getCapturedTurnStyle(settings('flip'), false, false)).toBe('curl');
+    expect(getCapturedTurnStyle(settings('flip'), true, false)).toBe('curl');
+  });
+
+  it('runs the View Transition curl on web engines', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_PLATFORM', 'web');
+    stubEngine({ startViewTransition: true, nestedGroups: true });
+    const { view, renderer } = makeView();
+    applyPageTurnAttributes(view, settings('flip'), false, false);
+    expect(renderer.getAttribute('turn-style')).toBe('curl');
+  });
+});
+
 describe('applyPageTurnAttributes', () => {
   it('keeps the View Transition slide on fully supporting engines', () => {
     vi.stubEnv('NEXT_PUBLIC_APP_PLATFORM', 'web');
@@ -250,5 +270,28 @@ describe('applyPageTurnAttributes', () => {
 
     expect(renderer.hasAttribute('no-swipe')).toBe(true);
     expect(renderer.hasAttribute('captured-turn-style')).toBe(false);
+  });
+
+  // #7575: an Auto Scroll session turns the pages itself. A curl, flip or
+  // slide would play over its wipe.
+  it.each(['tauri', 'web'])('turns no page animation on during Auto Scroll (%s)', (platform) => {
+    vi.stubEnv('NEXT_PUBLIC_APP_PLATFORM', platform);
+    stubEngine({ startViewTransition: true, nestedGroups: true });
+    const { view, renderer } = makeView();
+    useReaderStore.setState({ viewStates: { book: { view, autoScrollEnabled: true } } } as never);
+    try {
+      for (const style of ['curl', 'flip', 'slide'] as const) {
+        applyPageTurnAttributes(view, settings(style), false, true);
+        expect(renderer.hasAttribute('captured-turn-style')).toBe(false);
+        expect(renderer.hasAttribute('turn-style')).toBe(false);
+        // The page copy takes the swipes most of the time: none turns a page.
+        expect(renderer.hasAttribute('no-swipe')).toBe(true);
+      }
+      // A scrolled session keeps the paginator's touch handling.
+      applyPageTurnAttributes(view, { ...settings('curl'), scrolled: true }, false, true);
+      expect(renderer.hasAttribute('no-swipe')).toBe(false);
+    } finally {
+      useReaderStore.setState({ viewStates: {} } as never);
+    }
   });
 });
